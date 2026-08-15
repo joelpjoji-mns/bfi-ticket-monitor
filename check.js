@@ -97,7 +97,7 @@ async function readPage(page, url, pageNum) {
       Array.isArray(articleContext.searchResults) &&
       articleContext.searchResults.length > 0
     );
-  }, { timeout: 8000 })
+  }, { timeout: 3000 })
     .then(() => page.evaluate(() => articleContext.searchResults))
     .catch(() => {
       // Timeout — page genuinely has 0 results (e.g. empty calendar page)
