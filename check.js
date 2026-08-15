@@ -163,25 +163,43 @@ async function checkFilm(page, film) {
 
   const allResults = [...ctx.results];
 
-  // Pages 2–N — navigate by clicking pagination links to avoid Cloudflare blocks
+  // Pages 2–N — navigate by clicking pagination links (it uses AJAX)
+  let lastResults = ctx.results;
+  
   for (let p = 2; p <= ctx.totalPages; p++) {
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 800)); // brief pause
     try {
-      // Click the exact page number link and wait for navigation
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
-        page.click(`a:text-is("${p}")`)
-      ]);
+      const oldId = lastResults.length > 0 ? lastResults[0][0] : null;
+      
+      // Click the exact page number link using native DOM to ensure AJAX fires correctly
+      const clicked = await page.evaluate((pageNum) => {
+        const links = Array.from(document.querySelectorAll('a'));
+        const link = links.find(a => a.textContent.trim() === pageNum.toString());
+        if (link) {
+          link.click();
+          return true;
+        }
+        return false;
+      }, p);
 
-      // Wait for articleContext to load on the new page
-      const pageResults = await page.waitForFunction(() => {
-        return typeof articleContext !== 'undefined' && Array.isArray(articleContext.searchResults);
-      }, { timeout: 10000 }).then(() => page.evaluate(() => articleContext.searchResults));
+      if (!clicked) {
+        log(`⚠️ Page ${p}: pagination link not found on page`);
+        continue;
+      }
+
+      // Wait for the results to update (AJAX)
+      const pageResults = await page.waitForFunction((prevId) => {
+        return typeof articleContext !== 'undefined' && 
+               Array.isArray(articleContext.searchResults) &&
+               articleContext.searchResults.length > 0 &&
+               articleContext.searchResults[0][0] !== prevId;
+      }, oldId, { timeout: 10000 }).then(() => page.evaluate(() => articleContext.searchResults));
 
       log(`Page ${p}: ${pageResults.length} screenings`);
       allResults.push(...pageResults);
+      lastResults = pageResults;
     } catch (e) {
-      log(`⚠️ Page ${p}: failed to navigate via click (${e.message})`);
+      log(`⚠️ Page ${p}: failed to load via AJAX click (${e.message})`);
     }
   }
 
