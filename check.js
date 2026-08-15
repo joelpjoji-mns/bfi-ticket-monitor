@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /**
- * BFI IMAX Ticket Check — one-shot version for GitHub Actions.
- * Runs once, checks all pages, sends ntfy notification if seats found, then exits.
+ * BFI IMAX Ticket Check — GitHub Actions one-shot runner
+ *
+ * Strategy:
+ *   - Playwright loads page 1 only (needed to get session cookies + sToken)
+ *   - Raw node-fetch handles all remaining pages (fast, ~200ms each)
+ *   - Total runtime: ~20-30s for 19 pages, well within Actions limits
  *
  * Required env vars:
- *   NTFY_TOPIC  — your ntfy.sh topic name (set as a GitHub Secret)
+ *   NTFY_TOPIC — your ntfy.sh topic (set as a GitHub Secret)
  */
 
 const { chromium } = require('playwright');
@@ -13,7 +17,6 @@ const fetch = require('node-fetch');
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
 if (!NTFY_TOPIC) {
   console.error('ERROR: NTFY_TOPIC environment variable is not set.');
-  console.error('Add it as a GitHub Secret named NTFY_TOPIC.');
   process.exit(1);
 }
 
@@ -28,14 +31,13 @@ const FILMS = [
   // { name: 'Another Film', articleId: 'XXXX' },
 ];
 
+// ── Logging ───────────────────────────────────────────────────────────────────
+
 function log(msg) {
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] ${msg}`);
+  console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+// ── Notification ──────────────────────────────────────────────────────────────
 
 async function sendNotification(screening) {
   const { film, date, availNum, status, bookingUrl } = screening;
@@ -44,130 +46,178 @@ async function sendNotification(screening) {
 
   log(`📱 Sending notification: ${film} | ${date} | ${availNum} seat(s)`);
 
-  const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
-    method: 'POST',
-    headers: {
-      Title: `TICKETS AVAILABLE — ${film}`,
-      Priority: 'urgent',
-      Tags: 'loudspeaker,ticket',
-      Click: bookingUrl,
-      'X-Actions': `view, Open booking page, ${bookingUrl}`,
-      'Content-Type': 'text/plain',
-    },
-    body: `${statusLabel} — ${availNum} seat(s)\n📅 ${date}\n\nBook NOW before they sell out!`,
-  });
-
-  if (res.ok) {
-    log('✅ Notification sent successfully');
-  } else {
-    log(`⚠️ ntfy returned HTTP ${res.status}`);
+  try {
+    const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
+      method: 'POST',
+      headers: {
+        Title: `TICKETS AVAILABLE — ${film}`,
+        Priority: 'urgent',
+        Tags: 'loudspeaker,ticket',
+        Click: bookingUrl,
+        'X-Actions': `view, Open booking page, ${bookingUrl}`,
+        'Content-Type': 'text/plain',
+      },
+      body: `${statusLabel} — ${availNum} seat(s)\n📅 ${date}\n\nBook NOW before they sell out!`,
+    });
+    log(res.ok ? '✅ Notification sent' : `⚠️ ntfy HTTP ${res.status}`);
+  } catch (e) {
+    log(`⚠️ Notification failed: ${e.message}`);
   }
 }
 
-async function checkFilm(page, film) {
-  const { name, articleId } = film;
+// ── Parse searchResults from raw HTML ─────────────────────────────────────────
 
-  const url = `${BASE_URL}default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=${articleId}`;
+function parseSearchResults(html) {
+  const idx = html.indexOf('searchResults');
+  if (idx === -1) return [];
 
-  log(`Checking: ${name}`);
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const after = html.slice(idx + 'searchResults'.length);
+  const arrStart = after.indexOf('[');
+  if (arrStart === -1) return [];
 
-  const ctx = await page.evaluate(() => {
-    if (typeof articleContext === 'undefined') return null;
-    return {
-      sToken: articleContext.sToken || null,
-      totalPages: articleContext.pagination
-        ? parseInt(articleContext.pagination.total_pages, 10)
-        : 1,
-      searchResults: articleContext.searchResults || [],
-    };
-  });
-
-  if (!ctx) {
-    log(`⚠️ No articleContext found for "${name}" — page may have changed`);
-    return [];
-  }
-
-  log(`Found ${ctx.totalPages} page(s) of screenings for "${name}"`);
-
-  const allResults = [...ctx.searchResults];
-  log(`Page 1: ${ctx.searchResults.length} screenings`);
-
-  // Paginate through remaining pages
-  for (let p = 2; p <= ctx.totalPages; p++) {
-    await sleep(800);
-    const pageUrl = `${BASE_URL}default.asp?sToken=${encodeURIComponent(ctx.sToken)}&BOset::WScontent::SearchResultsInfo::current_page=${p}&doWork::WScontent::getPage=&BOparam::WScontent::getPage::article_id=${articleId}`;
-
-    try {
-      await page.goto(pageUrl, { waitUntil: 'networkidle', timeout: 30000 });
-
-      const pageResults = await page.evaluate(() => {
-        // Primary: read from articleContext
-        if (typeof articleContext !== 'undefined' && Array.isArray(articleContext.searchResults)) {
-          return articleContext.searchResults;
-        }
-        // Fallback: parse from inline script tag
-        const scripts = Array.from(document.querySelectorAll('script'));
-        for (const s of scripts) {
-          const m = s.textContent.match(/searchResults\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
-          if (m) {
-            try { return JSON.parse(m[1]); } catch (_) {}
-          }
-        }
-        return [];
-      });
-
-      log(`Page ${p}: ${pageResults.length} screenings`);
-      allResults.push(...pageResults);
-    } catch (e) {
-      log(`⚠️ Error fetching page ${p}: ${e.message}`);
+  // Walk brackets to find matching close
+  let depth = 0;
+  let arrEnd = -1;
+  for (let i = arrStart; i < Math.min(after.length, arrStart + 500000); i++) {
+    if (after[i] === '[') depth++;
+    else if (after[i] === ']') {
+      depth--;
+      if (depth === 0) { arrEnd = i; break; }
     }
   }
+  if (arrEnd === -1) return [];
 
-  log(`Scanned ${allResults.length} total screenings`);
+  try {
+    return JSON.parse(after.slice(arrStart, arrEnd + 1));
+  } catch (_) {
+    return [];
+  }
+}
 
+function parseToken(html) {
+  const m = html.match(/sToken\s*[=:]\s*["']([^"']+)["']/);
+  return m ? m[1] : null;
+}
+
+function parseTotalPages(html) {
+  const m = html.match(/total_pages\s*[=:]\s*["']?(\d+)["']?/);
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+// ── Extract available screenings from results array ───────────────────────────
+
+function extractAvailable(results, filmName) {
   const available = [];
-  for (const r of allResults) {
+  for (const r of results) {
     try {
       const screeningId = r[0];
-      const date = r[7];
-      const status = r[15]; // 'S' = sold out, 'L' = limited, 'G' = good
-      const availNum = parseInt(r[16], 10);
-      const relPath = r[18] || '';
-      const bookingUrl = relPath.startsWith('http') ? relPath : BASE_URL + relPath;
+      const date        = r[7];
+      const status      = r[15]; // 'S' = sold out, 'L' = limited, 'G' = good
+      const availNum    = parseInt(r[16], 10);
+      const relPath     = r[18] || '';
+      const bookingUrl  = relPath.startsWith('http') ? relPath : BASE_URL + relPath;
 
       if (status !== 'S' && !isNaN(availNum) && availNum > 0) {
-        available.push({ film: name, screeningId, date, status, availNum, bookingUrl });
+        available.push({ film: filmName, screeningId, date, status, availNum, bookingUrl });
       }
     } catch (_) {}
   }
-
   return available;
 }
+
+// ── Main film check ───────────────────────────────────────────────────────────
+
+async function checkFilm(browserPage, cookieHeader, film) {
+  const { name, articleId } = film;
+  const page1Url = `${BASE_URL}default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=${articleId}`;
+
+  // Page 1 — use Playwright (has session cookies already from browser launch)
+  log(`Checking: ${name}`);
+  await browserPage.goto(page1Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+  const html1 = await browserPage.content();
+  const sToken     = parseToken(html1);
+  const totalPages = parseTotalPages(html1);
+  const results1   = parseSearchResults(html1);
+
+  log(`Page 1: ${results1.length} screenings | ${totalPages} total pages`);
+
+  const allResults = [...results1];
+
+  // Pages 2–N — use fast node-fetch with session cookies
+  if (sToken && totalPages > 1) {
+    // Grab cookies from Playwright context to reuse in fetch
+    const cookies = await browserPage.context().cookies();
+    const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+    const fetchHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-GB,en;q=0.9',
+      'Referer': page1Url,
+      'Cookie': cookieStr,
+    };
+
+    // Fetch all remaining pages concurrently (max 5 at a time to be polite)
+    const remaining = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    const BATCH = 5;
+
+    for (let i = 0; i < remaining.length; i += BATCH) {
+      const batch = remaining.slice(i, i + BATCH);
+      const batchResults = await Promise.all(
+        batch.map(async (p) => {
+          const url = `${BASE_URL}default.asp?sToken=${encodeURIComponent(sToken)}&BOset::WScontent::SearchResultsInfo::current_page=${p}&doWork::WScontent::getPage=&BOparam::WScontent::getPage::article_id=${articleId}`;
+          try {
+            const res = await fetch(url, { headers: fetchHeaders });
+            if (!res.ok) { log(`⚠️ Page ${p}: HTTP ${res.status}`); return { p, results: [] }; }
+            const html = await res.text();
+            const results = parseSearchResults(html);
+            return { p, results };
+          } catch (e) {
+            log(`⚠️ Page ${p} error: ${e.message}`);
+            return { p, results: [] };
+          }
+        })
+      );
+
+      for (const { p, results } of batchResults) {
+        log(`Page ${p}: ${results.length} screenings`);
+        allResults.push(...results);
+      }
+    }
+  }
+
+  log(`Total scanned: ${allResults.length} screenings across ${totalPages} page(s)`);
+  return extractAvailable(allResults, name);
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 async function main() {
   log('=== BFI IMAX Ticket Check (GitHub Actions) ===');
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
   });
   const page = await context.newPage();
+
+  // Hit the homepage first to pick up session cookies
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
   let anyFound = false;
 
   for (const film of FILMS) {
     try {
-      const available = await checkFilm(page, film);
+      const available = await checkFilm(page, null, film);
 
       if (available.length === 0) {
         log(`❌ "${film.name}" — all sold out`);
       } else {
         anyFound = true;
         for (const s of available) {
-          log(`🎟️  AVAILABLE: ${s.film} | ${s.date} | ${s.availNum} seat(s) | status: ${s.status}`);
-          log(`   Book here: ${s.bookingUrl}`);
+          log(`🎟️  AVAILABLE: ${s.film} | ${s.date} | ${s.availNum} seat(s) | ${s.status}`);
+          log(`   Book: ${s.bookingUrl}`);
           await sendNotification(s);
         }
       }
@@ -179,13 +229,13 @@ async function main() {
   await browser.close();
 
   if (!anyFound) {
-    log('No tickets available this run. GitHub Actions will check again in 5 minutes.');
+    log('No tickets available this run — will check again in 5 minutes.');
   }
 
   log('=== Check complete ===');
 }
 
 main().catch((e) => {
-  console.error('Fatal error:', e);
+  console.error('Fatal:', e);
   process.exit(1);
 });
