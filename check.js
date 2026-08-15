@@ -85,27 +85,53 @@ function extractAvailable(results, filmName) {
   return available;
 }
 
-// ── Read a single page's screenings via Playwright ────────────────────────────
+// ── Read a single page's screenings via HTML parsing ──────────────────────────
 
 async function readPage(page, url, pageNum) {
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+  } catch (e) {
+    log(`⚠️ Page ${pageNum}: navigation error (${e.message})`);
+    return [];
+  }
 
-  // Wait up to 8s for articleContext.searchResults to be populated by JS
-  const results = await page.waitForFunction(() => {
-    return (
-      typeof articleContext !== 'undefined' &&
-      Array.isArray(articleContext.searchResults) &&
-      articleContext.searchResults.length > 0
-    );
-  }, { timeout: 3000 })
-    .then(() => page.evaluate(() => articleContext.searchResults))
-    .catch(() => {
-      // Timeout — page genuinely has 0 results (e.g. empty calendar page)
-      return [];
-    });
+  // Brief pause to ensure inline scripts are there
+  await new Promise(r => setTimeout(r, 500));
+  
+  const html = await page.content();
+  const idx = html.indexOf('searchResults');
+  if (idx === -1) {
+    log(`⚠️ Page ${pageNum}: NO searchResults found in HTML. Snippet: ${html.substring(0, 300).replace(/\\n/g, ' ')}`);
+    return [];
+  }
 
-  log(`Page ${pageNum}: ${results.length} screenings`);
-  return results;
+  const after = html.slice(idx + 'searchResults'.length);
+  const start = after.indexOf('[');
+  if (start === -1) return [];
+
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < after.length; i++) {
+    if (after[i] === '[') depth++;
+    else if (after[i] === ']') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+
+  if (end === -1) return [];
+
+  try {
+    const results = JSON.parse(after.slice(start, end + 1));
+    log(`Page ${pageNum}: ${results.length} screenings`);
+    return results;
+  } catch (e) {
+    log(`⚠️ Page ${pageNum}: failed to parse searchResults JSON`);
+    return [];
+  }
 }
 
 // ── Main film check ───────────────────────────────────────────────────────────
@@ -117,39 +143,46 @@ async function checkFilm(page, film) {
   log(`Checking: ${name}`);
 
   // Page 1 — also grab sToken and totalPages
-  await page.goto(page1Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  try {
+    await page.goto(page1Url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (e) {
+    log(`⚠️ Page 1 navigation error: ${e.message}`);
+    return [];
+  }
 
-  const ctx = await page.waitForFunction(() => {
-    return (
-      typeof articleContext !== 'undefined' &&
-      articleContext.pagination &&
-      Array.isArray(articleContext.searchResults)
-    );
-  }, { timeout: 10000 })
-    .then(() => page.evaluate(() => ({
-      sToken:     articleContext.sToken,
-      totalPages: parseInt(articleContext.pagination.total_pages, 10),
-      results:    articleContext.searchResults,
-    })))
-    .catch(async () => {
-      // Fallback: just grab whatever's there
-      return page.evaluate(() => ({
-        sToken:     (typeof articleContext !== 'undefined' && articleContext.sToken) || null,
-        totalPages: (typeof articleContext !== 'undefined' && articleContext.pagination)
-          ? parseInt(articleContext.pagination.total_pages, 10) : 1,
-        results:    (typeof articleContext !== 'undefined' && articleContext.searchResults) || [],
-      }));
-    });
+  const ctx = await page.evaluate(() => {
+    return {
+      sToken:     (typeof articleContext !== 'undefined' && articleContext.sToken) || null,
+      totalPages: (typeof articleContext !== 'undefined' && articleContext.pagination)
+        ? parseInt(articleContext.pagination.total_pages, 10) : 1,
+      results:    (typeof articleContext !== 'undefined' && articleContext.searchResults) || [],
+    };
+  });
 
   log(`Page 1: ${ctx.results.length} screenings | ${ctx.totalPages} total pages`);
 
   const allResults = [...ctx.results];
 
-  // Pages 2–N — navigate in Playwright keeping the session alive
+  // Pages 2–N — navigate by clicking pagination links to avoid Cloudflare blocks
   for (let p = 2; p <= ctx.totalPages; p++) {
-    const pageUrl = `${BASE_URL}default.asp?sToken=${encodeURIComponent(ctx.sToken)}&BOset::WScontent::SearchResultsInfo::current_page=${p}&doWork::WScontent::getPage=&BOparam::WScontent::getPage::article_id=${articleId}`;
-    const results = await readPage(page, pageUrl, p);
-    allResults.push(...results);
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      // Click the exact page number link and wait for navigation
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+        page.click(`a:text-is("${p}")`)
+      ]);
+
+      // Wait for articleContext to load on the new page
+      const pageResults = await page.waitForFunction(() => {
+        return typeof articleContext !== 'undefined' && Array.isArray(articleContext.searchResults);
+      }, { timeout: 10000 }).then(() => page.evaluate(() => articleContext.searchResults));
+
+      log(`Page ${p}: ${pageResults.length} screenings`);
+      allResults.push(...pageResults);
+    } catch (e) {
+      log(`⚠️ Page ${p}: failed to navigate via click (${e.message})`);
+    }
   }
 
   log(`Total scanned: ${allResults.length} screenings across ${ctx.totalPages} page(s)`);
