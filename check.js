@@ -91,19 +91,34 @@ async function checkFilm(page, film) {
   log(`Found ${ctx.totalPages} page(s) of screenings for "${name}"`);
 
   const allResults = [...ctx.searchResults];
+  log(`Page 1: ${ctx.searchResults.length} screenings`);
 
   // Paginate through remaining pages
   for (let p = 2; p <= ctx.totalPages; p++) {
-    await sleep(700);
+    await sleep(800);
     const pageUrl = `${BASE_URL}default.asp?sToken=${encodeURIComponent(ctx.sToken)}&BOset::WScontent::SearchResultsInfo::current_page=${p}&doWork::WScontent::getPage=&BOparam::WScontent::getPage::article_id=${articleId}`;
 
     try {
-      await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      const pageCtx = await page.evaluate(() => {
-        if (typeof articleContext === 'undefined') return null;
-        return { searchResults: articleContext.searchResults || [] };
+      await page.goto(pageUrl, { waitUntil: 'networkidle', timeout: 30000 });
+
+      const pageResults = await page.evaluate(() => {
+        // Primary: read from articleContext
+        if (typeof articleContext !== 'undefined' && Array.isArray(articleContext.searchResults)) {
+          return articleContext.searchResults;
+        }
+        // Fallback: parse from inline script tag
+        const scripts = Array.from(document.querySelectorAll('script'));
+        for (const s of scripts) {
+          const m = s.textContent.match(/searchResults\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
+          if (m) {
+            try { return JSON.parse(m[1]); } catch (_) {}
+          }
+        }
+        return [];
       });
-      if (pageCtx) allResults.push(...pageCtx.searchResults);
+
+      log(`Page ${p}: ${pageResults.length} screenings`);
+      allResults.push(...pageResults);
     } catch (e) {
       log(`⚠️ Error fetching page ${p}: ${e.message}`);
     }
