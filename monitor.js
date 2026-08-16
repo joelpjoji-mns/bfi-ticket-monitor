@@ -12,7 +12,9 @@
  *   5. node monitor.js
  */
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
 const fetch = require('node-fetch');
 
 // ─────────────────────────────────────────────────────────────────────────────

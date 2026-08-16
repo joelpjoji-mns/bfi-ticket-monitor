@@ -10,7 +10,9 @@
  *   NTFY_TOPIC — your ntfy.sh topic (set as a GitHub Secret)
  */
 
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-extra');
+const stealth = require('puppeteer-extra-plugin-stealth')();
+chromium.use(stealth);
 const fetch = require('node-fetch');
 
 const NTFY_TOPIC = process.env.NTFY_TOPIC;
@@ -188,12 +190,20 @@ async function checkFilm(page, film) {
       }
 
       // Wait for the results to update (AJAX)
-      const pageResults = await page.waitForFunction((prevId) => {
-        return typeof articleContext !== 'undefined' && 
-               Array.isArray(articleContext.searchResults) &&
-               articleContext.searchResults.length > 0 &&
-               articleContext.searchResults[0][0] !== prevId;
-      }, oldId, { timeout: 10000 }).then(() => page.evaluate(() => articleContext.searchResults));
+      let pageResults;
+      try {
+        pageResults = await page.waitForFunction((prevId) => {
+          return typeof articleContext !== 'undefined' && 
+                 Array.isArray(articleContext.searchResults) &&
+                 articleContext.searchResults.length > 0 &&
+                 articleContext.searchResults[0][0] !== prevId;
+        }, oldId, { timeout: 30000 }).then(() => page.evaluate(() => articleContext.searchResults));
+      } catch (err) {
+        const title = await page.title();
+        const html = await page.content();
+        log(`⚠️ Page ${p}: waitForFunction timeout. Title: "${title}". HTML snippet: ${html.substring(0, 300).replace(/\\n/g, ' ')}`);
+        continue;
+      }
 
       log(`Page ${p}: ${pageResults.length} screenings`);
       allResults.push(...pageResults);
