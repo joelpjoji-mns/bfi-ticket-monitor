@@ -36,6 +36,7 @@ const CONFIG = {
     {
       name: 'The Odyssey — BFI IMAX',
       articleId: 'A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
+      minDate: '2026-09-18', // Only alert for screenings on or after this date
       // Direct link sent in the notification
       bookingBaseUrl:
         'https://whatson.bfi.org.uk/imax/Online/default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
@@ -125,6 +126,8 @@ async function getScreenings(page, film) {
 
   // Filter for available screenings
   const available = [];
+  const minDateMs = film.minDate ? new Date(film.minDate).getTime() : 0;
+
   for (const r of allResults) {
     try {
       const screeningId = r[0];
@@ -135,6 +138,12 @@ async function getScreenings(page, film) {
       const bookingUrl = relPath.startsWith('http') ? relPath : BASE_URL + relPath;
 
       if (status !== 'S' && !isNaN(availNum) && availNum > 0) {
+        // Check date filter
+        const screeningDateMs = new Date(date).getTime();
+        if (minDateMs && screeningDateMs < minDateMs) {
+          continue; // Skip because it's before the configured minimum date
+        }
+
         available.push({ film: name, screeningId, date, status, availNum, bookingUrl });
       }
     } catch (_) {}

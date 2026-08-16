@@ -27,6 +27,7 @@ const FILMS = [
   {
     name: 'The Odyssey — BFI IMAX',
     articleId: 'A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
+    minDate: '2026-09-18', // Only alert for screenings on or after this date
   },
   // Add more films here later:
   // { name: 'Another Film', articleId: 'XXXX' },
@@ -68,8 +69,10 @@ async function sendNotification(screening) {
 
 // ── Extract available screenings ──────────────────────────────────────────────
 
-function extractAvailable(results, filmName) {
+function extractAvailable(results, film) {
   const available = [];
+  const minDateMs = film.minDate ? new Date(film.minDate).getTime() : 0;
+
   for (const r of results) {
     try {
       const screeningId = r[0];
@@ -80,7 +83,13 @@ function extractAvailable(results, filmName) {
       const bookingUrl  = relPath.startsWith('http') ? relPath : BASE_URL + relPath;
 
       if (status !== 'S' && !isNaN(availNum) && availNum > 0) {
-        available.push({ film: filmName, screeningId, date, status, availNum, bookingUrl });
+        // Check date filter
+        const screeningDateMs = new Date(date).getTime();
+        if (minDateMs && screeningDateMs < minDateMs) {
+          continue; // Skip because it's before the configured minimum date
+        }
+
+        available.push({ film: film.name, screeningId, date, status, availNum, bookingUrl });
       }
     } catch (_) {}
   }
@@ -214,7 +223,7 @@ async function checkFilm(page, film) {
   }
 
   log(`Total scanned: ${allResults.length} screenings across ${ctx.totalPages} page(s)`);
-  return extractAvailable(allResults, name);
+  return extractAvailable(allResults, film);
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
