@@ -36,7 +36,7 @@ const CONFIG = {
     {
       name: 'The Odyssey — BFI IMAX',
       articleId: 'A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
-      minDate: '2026-09-18', // Only alert for screenings on or after this date
+      minDate: '2026-09-16', // Only alert for screenings on or after this date
       // Direct link sent in the notification
       bookingBaseUrl:
         'https://whatson.bfi.org.uk/imax/Online/default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
