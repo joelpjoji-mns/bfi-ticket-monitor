@@ -159,7 +159,7 @@ async function sendNotification(screening) {
     const res = await fetch(`https://ntfy.sh/${CONFIG.ntfyTopic}`, {
       method: 'POST',
       headers: {
-        Title: title,
+        Title: '=?UTF-8?B?' + Buffer.from(title).toString('base64') + '?=',
         Priority: 'urgent',
         Tags: 'loudspeaker,ticket',
         Click: bookingUrl,

@@ -51,7 +51,7 @@ async function sendNotification(screening) {
     const res = await fetch(`https://ntfy.sh/${NTFY_TOPIC}`, {
       method: 'POST',
       headers: {
-        Title: `TICKETS AVAILABLE — ${film}`,
+        Title: '=?UTF-8?B?' + Buffer.from(`TICKETS AVAILABLE - ${film}`).toString('base64') + '?=',
         Priority: 'urgent',
         Tags: 'loudspeaker,ticket',
         Click: bookingUrl,
