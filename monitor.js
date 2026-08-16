@@ -41,6 +41,12 @@ const CONFIG = {
       bookingBaseUrl:
         'https://whatson.bfi.org.uk/imax/Online/default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
     },
+    {
+      name: 'Dune: Part Three — BFI IMAX',
+      articleId: '4AC25C2D-E6F1-410B-BDA8-16988ABF31F2',
+      bookingBaseUrl:
+        'https://whatson.bfi.org.uk/imax/Online/default.asp?doWork::WScontent::loadArticle=Load&BOparam::WScontent::loadArticle::article_id=4AC25C2D-E6F1-410B-BDA8-16988ABF31F2',
+    },
   ],
 
   /** Run browser headless (true = invisible, false = shows window) */

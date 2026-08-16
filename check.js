@@ -29,8 +29,10 @@ const FILMS = [
     articleId: 'A0A2A7B6-689F-40DA-A1E4-22F7A5B3E99A',
     minDate: '2026-09-18', // Only alert for screenings on or after this date
   },
-  // Add more films here later:
-  // { name: 'Another Film', articleId: 'XXXX' },
+  {
+    name: 'Dune: Part Three — BFI IMAX',
+    articleId: '4AC25C2D-E6F1-410B-BDA8-16988ABF31F2',
+  },
 ];
 
 // ── Logging ───────────────────────────────────────────────────────────────────
